@@ -423,14 +423,29 @@ def sse_keep(femsmc, emsmc, cutoff = 0.05):
 	#GOOD CODE UNTIL HERE. BELOW IS TESTING.
 
 	#for each sample, only retain best-fitting models
-	fitsams = sse.index.levels[1]
 
-	#sort by sample
+	#first get unique samples as index?
+	# fs = sse.index.levels[1]
+
+	#unstack into nis x ns df, where ns is the number of unique samples fit
+	sseus = sse.unstack()
+
+	#get total number of fits per sample
+	nts = sseus.count()
+
+	#get the number to be saved for each sample
+	nsave = (cutoff*nts).astype(int) + 1 #ensure each has at least 1 for now??
+
+	#argsort each column
+	ssest = np.argsort(sseus, axis=0)
+
 
 	#calculate which iterations are best fitting
 
 	#store
 
+	#goal:
+	#ik = index of keep/dont keep; length len(sse)
 
 
 	return
