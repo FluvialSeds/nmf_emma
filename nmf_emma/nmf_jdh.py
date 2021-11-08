@@ -1,0 +1,485 @@
+'''
+Scripts for performing NMF end-member mixing following Shaughnessy et al. (2021)
+'''
+
+#import packages
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import time
+
+from numpy.linalg import eig
+from sklearn.decomposition import NMF
+# from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
+from multiprocessing import Pool
+
+#Step 1: Normalize data to analyte of interest and generate bootstrapped df
+def normbs(df, nums, denom, nbs = 5000, logged = True):
+	'''
+	Normalizes input data, extracts relevant columns, and generates bootstrapped
+	dataframe.
+
+	Parameters
+	----------
+	df : pd.DataFrame
+		DataFrame containing all data, with sample names/IDs as the index,
+		and with columns containing ``nums'' and ``denom'' strings.
+
+	nums : list
+		List of strings containing the column names of each analyte of interest,
+		excluding the denominator analyte.
+
+	denom : str
+		String of the column name of the denomenator analyte
+
+	nbs : int
+		Number of bootstrap datapoints to generate
+
+	logged : boolean
+		If True, uses log-normalized data when generating bootstrapped
+		dataframe.
+
+	Returns
+	-------
+	mdnorm : pd.DataFrame
+		Resulting normalized dataframe of measured data, shape nxp. All data are
+		element of (0,1).
+
+	bdnorm : pd.DataFrame
+		Resulting normalized dataframe of bootstrapped data, shape nbsxp. Data
+		outside of the measured data range are dropped. All data are element of
+		(0,1).
+
+	colmax : pd.Series
+		Series of column-wise maximum values, shape 1xp.
+	'''
+
+	n = len(df)
+	m = len(nums)
+
+	#generate new (normalized) column names
+	ncs = [n+'_'+denom for n in nums]
+
+	#extract numerator columns and divide by denominator
+	md = df[nums]
+	mdd = md.divide(df[denom], axis = 0)
+	mdd.columns = ncs
+
+	if logged:
+
+		#calculate column-wise means and covariance matrix for logged data
+		d = np.log10(mdd)
+		cov = np.cov(d, rowvar = False)
+		means = d.mean(axis = 0).values
+
+	else:
+
+		#calculate column-wise means and covariance matrix
+		cov = np.cov(mdd, rowvar = False)
+		means = mdd.mean(axis = 0).values
+
+	#reseed random state and generate bootstrapped data
+	# make matrix twice as long as needed to ensure enough points after dropping
+	rng = np.random.RandomState(None) #seed from clock
+	bs = rng.multivariate_normal(means, cov, size = 2*nbs)
+
+	if logged:
+		bs = 10**bs
+
+	#get bootstrapped data into dataframe
+	bsd = pd.DataFrame(bs, columns = ncs)
+
+	#get maximum values for each column and normalize
+	colmax = mdd.max()
+	colmin = mdd.min()
+
+	mdnorm = mdd.divide(colmax)
+	bdnormm = bsd.divide(colmax)
+
+	#remove bootstrapped points outside of range and only retain first nbs
+	mask = (bsd <= colmax) & (bsd >= colmin)
+	ind = np.where(mask.sum(axis = 1) == m)[0]
+
+	#randomly select nbs points from the masked index array
+	bsind = rng.choice(ind, size = nbs, replace = False)
+
+	bdnorm = bdnormm.iloc[bsind,:]
+	bdnorm = bdnorm.reset_index()
+	bdnorm = bdnorm.drop('index', axis = 1) #drop old 'index' column
+
+	return mdnorm, bdnorm, colmax
+
+
+#Step 2: Determine number of end-members using PCA
+def calc_nems(df, var_exp = 0.95, whiten = True):
+	'''
+	Function to determine the number of end-members needed to explain a given
+	amount of variance in the data.
+
+	Parameters
+	----------
+	df : pd.DataFrame
+		Dataframe containing all data, where each row is a sample and each
+		column is a variable. Shape nxm.
+
+	var_exp : float
+		The fraction of variance needed to be explained by the resulting model.
+		Float element of (0,1).
+
+	whiten : Boolean
+		Tells the funciton whether or not to whiten the data (i.e., subtract
+		column-wise means and divide by column-wise standard deviations).
+
+	Returns
+	-------
+	nems : int
+		Number of end-members needed.
+	'''
+
+	#whiten if needed
+	if whiten:
+
+		mus = df.mean(axis = 0)
+		sigmas = df.std(axis = 0)
+
+		X = (df - mus).divide(sigmas)
+
+	else:
+
+		X = df
+
+	#calculate XTX matrix
+	XTX = np.dot(X.T, X)
+
+	#calculate eigenvectors and eigenvalues
+	l, V = eig(XTX)
+
+	#sort eigenvectors and eigenvalues
+	i = np.argsort(l)[::-1]
+
+	ls = l[i]
+	Vs = V[:,i]
+
+	#determine number of eigenvalues retained
+	cve = np.cumsum(ls)/np.sum(ls)
+
+	#add one for indexing, one for the fact that 2 is the minimum (for 1 PC)
+	nems = np.where(cve >= var_exp)[0][0] + 2
+
+	return nems
+
+#Step 3: Bootstrap data, omitting values outside of measured range
+# done in normbs function
+
+#Step 4: Perform NMF to get W and H matrices
+def nmf_emma(bdf, mdf, nems, sd = None, stuc_err = 0.05):
+	'''
+	Function to perform non-negative matrix factorization on streamwater data
+	and return end-member compositions and samples for which the model meets
+	the sum-to-unity constraint.
+
+	Parameters
+	----------
+	bdf : pd.DataFrame
+		Dataframe of scaled bootstrapped data, generated using ``normbs''. This
+		is the data that is fit to generate the model. Shape nbs x m.
+
+	mdf : pd.DataFrame
+		Dataframe of scaled measured data, generated using ``normbs''. The model
+		is then applied to this dataframe. Shape n x m.
+
+	nems : int
+		Number of end-members to consider. Can be estimated using ``calc_nems''.
+
+	sd : None or int
+		The seed to use for random state. Defaults to ``None''.
+
+	stuc_err : float
+		Sum-to-unity constraint error, as a fraction. For example, if `stuc_err'
+		is set to 0.05, then samples in which the model meets the sum-to-unity
+		constraint between 0.95 and 1.05 are retained. Defaults to ``0.05''.
+
+	Returns
+	-------
+	fems : pd.DataFrame
+		Dataframe containing fractional abundances of each end-member for each
+		sample in which the sum-to-unity constraint was met. Shape ns x p, where
+		ns is the number of solved samples.
+
+	ems : pd.DataFrame
+		Dataframe containing the composition of each end-member. Shape p x m.
+
+	See Also
+	--------
+	nmf_emma_mc
+		Function to perform ``nmf_emma'' iteratively (Monte Carlo solution).
+
+	'''
+
+	#make NMF model
+	m = NMF(n_components = nems,
+			init = 'random',
+			solver = 'cd',
+			random_state = sd,
+			max_iter = 10000,
+			tol = 1e-4,
+			)
+
+	#fit NMF model ("solve")
+	mod = m.fit(bdf)
+
+	#apply NMF model to measured data ("transform")
+	W = mod.transform(mdf)
+	H = mod.components_
+
+	#extract samples where sum-to-unity constraint is within threshold range
+	sow = W.sum(axis = 1)
+	ind = np.where((sow >= 1 - stuc_err) & (sow <= 1 + stuc_err))[0]
+
+	#get name lists for making dataframes
+	enames = ['em_'+str(e+1) for e in range(nems)]
+	cnames = mdf.columns
+
+	#store as dataframes
+	fems = pd.DataFrame(W[ind,:],
+						index = ind,
+						columns = enames,
+						)
+
+	ems = pd.DataFrame(H,
+					   index = enames,
+					   columns = cnames,
+					   )
+
+	return fems, ems
+
+#Step 5: Store results for samples that meet sum-to-unity constraint
+# done in nmf_emma function
+
+#Step 6: Repeat steps 4-5 n_iter times
+def nmf_emma_mc(bdf, mdf, nems, ni, stuc_err = 0.05):
+	'''
+	Function to perform Monte Carlo non-negative matrix factorization on
+	streamwater data and return resulting fractional contributions and end-
+	member compositions for each iteration. Uses multiprocessing to parallelize
+	iteration solutions.
+
+	Parameters
+	----------
+	bdf : pd.DataFrame
+		Dataframe of scaled bootstrapped data, generated using ``normbs''. This
+		is the data that is fit to generate the model. Shape nbs x m.
+
+	mdf : pd.DataFrame
+		Dataframe of scaled measured data, generated using ``normbs''. The model
+		is then applied to this dataframe. Shape n x m.
+
+	nems : int
+		Number of end-members to consider. Can be estimated using ``calc_nems''.
+
+	ni : int
+		Number of iterations to perform.
+
+	stuc_err : float
+		Sum-to-unity constraint error, as a fraction. For example, if `stuc_err'
+		is set to 0.05, then samples in which the model meets the sum-to-unity
+		constraint between 0.95 and 1.05 are retained. Defaults to ``0.05''.
+
+	Returns
+	-------
+	femsmc : pd.DataFrame
+		Dataframe containing fractional abundances of each end-member for each
+		sample in which the sum-to-unity constraint was met for each iteration.
+		Returns dataframe with multi-index, with the first level as the 
+		iteration number and the second level as the samples for which the sum-
+		to-unity constraint was met for that iteration; contains p columns of
+		fractional contribution of each end member.
+
+	emsmc : pd.DataFrame
+		Dataframe containing the composition of each end-member for each
+		iteration. Returns dataframe with multi-index, with the first level as
+		the iteration and the second level as the end-member. Contains p columns
+		and ni*3 rows, where ni is the number of iterations that solved at least
+		one sample within the sum-to-unity constraint.
+
+	Notes
+	-----
+	End-members are *not* sorted! That is, the "split-rule" constraint has not
+	yet been applied. So, for example, em_1 for iteration 1 may not be the same
+	as em_1 for iteration 2.
+
+	See Also
+	--------
+	nmf_emma
+		Function to perform a single iteration.
+
+	'''
+
+	#make partial function
+	f = partial(nmf_emma, bdf, mdf, nems, stuc_err = stuc_err)
+
+	#seed uniquely each time
+	rng = np.random.default_rng()
+	s0 = int(rng.uniform(low=0, high=1e6, size=1))
+	svec = np.arange(s0,s0+ni)
+
+	#parallelize
+	with Pool() as p: #with no arg, uses all available cores)
+		il = p.map(f, svec)
+
+	#extract fems and ems
+	fl, el = list(zip(*il))
+
+	#add iteration number to each sub dataframe
+	for i in range(ni):
+		fl[i]['iter'] = i
+		el[i]['iter'] = i
+
+	#concatenate lists of dfs into overall df
+	flist = pd.concat(fl)
+	elist = pd.concat(el)
+
+	#reindex flist by iteration
+	ft = flist.reset_index()
+	ft = ft.rename(columns = {'index':'sample'})
+	ft = ft.set_index(['iter','sample'])
+	femsmc = ft.sort_index(axis = 0)
+
+	#reindex elist by iteration
+	et = elist.reset_index()
+	et = et.rename(columns = {'index':'em'})
+	et = et.set_index(['iter','em'])
+
+	#only keep em results that matched at least one sample
+	emsmc = et.loc[femsmc.index.levels[0]]
+
+	return femsmc, emsmc
+
+#Step 7: Sort solutions by SSE and save best fitting 5% for each sample
+def sse_keep():
+	'''
+	Sorts model results by their || model - data || fit and retains only the
+	best-fitting models for each sample.
+
+	Parameters
+	----------
+
+	Returns
+	-------
+	'''
+
+
+
+
+	#get fractional abundance matrix into the right shape
+	X = femsmc.reset_index()
+	X['temp'] = X['iter']
+	X = X.set_index(['temp','iter','sample'])
+	X = X.unstack(0)
+	X = X.swaplevel(axis=1)
+	X = X.T.sort_index(level=0).T
+	X = X.fillna(0) #make all NaNs zero
+
+	#get design matrix, A
+	A = emsmc
+
+	#calculate Bhat
+	Bhat = X.dot(A)
+
+	i,j = list(zip(*Bhat.index))
+
+	B = mdnorm.loc[list(j)]
+	B.index = Bhat.index
+
+	#calculate sse
+	sse = ((B-Bhat)**2).sum(axis=1)
+
+	return
+
+
+
+def splitrule_sort(femsmc, emsmc):
+	'''
+	'''
+
+	return
+
+
+
+#Step 8: Ensure end-members are in same order using cop-kmeans ("split rule")
+
+
+#Step 9: Take mean and std. dev. of w and h results for each sample
+
+
+if __name__ == "__main__":
+
+	print('success')
+
+	# tic = time.time()
+	# with ThreadPoolExecutor(max_workers = 30) as executor:
+
+	# 	for i in range(100):
+	# 		executor.submit(nmf_emma, bdf, mdf, 3, sd = i)
+
+	# toc = time.time() - tic
+	# print(toc)
+
+
+
+	# tic = time.time()
+	# for i in range(100):
+	# 	res = nmf_emma(bdf,mdf,3,sd=i)
+
+	# toc = time.time() - tic
+	# print(toc)
+
+
+	# f = partial(nmf_emma, bdf, mdf, nems, stuc_err = stuc_err)
+
+	# #something like this (but it bugs out right now)
+ #    with Pool(5) as p:
+ #        print(p.map(f, [1, 2, 3]))
+
+
+	# def pt(a,b,c=5,d=10):
+
+	# 	print('a = {}'.format(a))
+	# 	print('b = {}'.format(b))
+	# 	print('c = {}'.format(c))
+	# 	print('d = {}'.format(d))
+
+	# 	return a
+
+	# f = partial(pt, 2,3, d=5)
+
+	# with Pool(5) as p:
+	# 	p.map(f, range(5))
+
+
+# tic = time.time()
+# iterlist = nmf_iter(bdnorm,mdnorm,nems,1000)
+# toc = time.time()
+# print('time = %.2f' % toc-tic)
+
+
+	# #get matrix for each iteration
+	# A = emsmc.loc[0].unstack()
+	# x = femsmc.loc[0]
+	# Bhat = np.dot(x,A)
+	# B = mdnorm.loc[x.index]
+	# se = (B - Bhat)**2
+	# sse = se.sum(axis=1)
+
+
+
+	# #TESTING CODE
+	# # i,j = list(zip(*femsmc.index))
+	
+	# #reshape femsmc
+	# # X = femsmc.unstack(0)
+	# # X = X.swaplevel(axis = 1)
+
+	# # #now reorder columns
+	# # X = X.T.sort_index(level=0).T
