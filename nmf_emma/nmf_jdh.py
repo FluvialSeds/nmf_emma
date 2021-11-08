@@ -10,7 +10,6 @@ import time
 
 from numpy.linalg import eig
 from sklearn.decomposition import NMF
-# from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from multiprocessing import Pool
 
@@ -109,7 +108,6 @@ def normbs(df, nums, denom, nbs = 5000, logged = True):
 	bdnorm = bdnorm.drop('index', axis = 1) #drop old 'index' column
 
 	return mdnorm, bdnorm, colmax
-
 
 #Step 2: Determine number of end-members using PCA
 def calc_nems(df, var_exp = 0.95, whiten = True):
@@ -328,6 +326,10 @@ def nmf_emma_mc(bdf, mdf, nems, ni, stuc_err = 0.05):
 	with Pool() as p: #with no arg, uses all available cores)
 		il = p.map(f, svec)
 
+		#necessary?
+		p.close()
+		p.join()
+
 	#extract fems and ems
 	fl, el = list(zip(*il))
 
@@ -357,22 +359,42 @@ def nmf_emma_mc(bdf, mdf, nems, ni, stuc_err = 0.05):
 	return femsmc, emsmc
 
 #Step 7: Sort solutions by SSE and save best fitting 5% for each sample
-def sse_keep():
+def sse_keep(femsmc, emsmc, cutoff = 0.05):
 	'''
 	Sorts model results by their || model - data || fit and retains only the
 	best-fitting models for each sample.
 
 	Parameters
 	----------
+	femsmc : pd.DataFrame
+		Dataframe containing fractional abundances of each end-member for each
+		sample in which the sum-to-unity constraint was met for each iteration.
+		Returns dataframe with multi-index, with the first level as the 
+		iteration number and the second level as the samples for which the sum-
+		to-unity constraint was met for that iteration; contains p columns of
+		fractional contribution of each end member.
+
+	emsmc : pd.DataFrame
+		Dataframe containing the composition of each end-member for each
+		iteration. Returns dataframe with multi-index, with the first level as
+		the iteration and the second level as the end-member. Contains p columns
+		and ni*3 rows, where ni is the number of iterations that solved at least
+		one sample within the sum-to-unity constraint.
+
+	cutoff : float
+		The fraction of best-fitting models to keep; e.g., if ``cutoff = 0.05``,
+		then the 5% of best fitting models for each sample are retained.
+		Defaults to ``0.05``.
 
 	Returns
 	-------
+	
+
 	'''
 
-
-
-
 	#get fractional abundance matrix into the right shape
+	#shape = ns x 3*nis, where ns is the total number of samples fit and nis is
+	# the number of iterations that fit at least one sample.
 	X = femsmc.reset_index()
 	X['temp'] = X['iter']
 	X = X.set_index(['temp','iter','sample'])
@@ -382,18 +404,34 @@ def sse_keep():
 	X = X.fillna(0) #make all NaNs zero
 
 	#get design matrix, A
+	#shape = 3*nis x na, where na is the number of analytes
 	A = emsmc
 
-	#calculate Bhat
+	#calculate estimated analyte values, Bhat, as A*X = Bhat
+	#shape = ns x na
 	Bhat = X.dot(A)
 
 	i,j = list(zip(*Bhat.index))
 
+	#extract measured values
 	B = mdnorm.loc[list(j)]
 	B.index = Bhat.index
 
-	#calculate sse
+	#calculate sse (length = ns)
 	sse = ((B-Bhat)**2).sum(axis=1)
+
+	#GOOD CODE UNTIL HERE. BELOW IS TESTING.
+
+	#for each sample, only retain best-fitting models
+	fitsams = sse.index.levels[1]
+
+	#sort by sample
+
+	#calculate which iterations are best fitting
+
+	#store
+
+
 
 	return
 
