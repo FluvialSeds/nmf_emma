@@ -13,6 +13,34 @@ from sklearn.decomposition import NMF
 from functools import partial
 from multiprocessing import Pool
 
+#helper functions:
+
+#define function to apply to each column
+def _keep(x, n):
+	'''
+	Function for keeping only the n best-fitting results per sample
+
+	Parameters
+	----------
+	x : pd.Series
+		Each column of the unstacked sse matrix
+
+	n : int
+		Number of best-fitting results to keep for column x
+
+	Returns
+	-------
+	tf : pd.Series
+		Boolean series that is true where the fits should be kept and false 
+		where they should be dropped.
+	'''
+
+	st = np.sort(x.dropna()) #drop nans and sort
+	thresh = st[n] #get threshold
+	tf = x <= thresh #find where less or equal to threshold
+
+	return tf
+
 #Step 1: Normalize data to analyte of interest and generate bootstrapped df
 def normbs(df, nums, denom, nbs = 5000, logged = True):
 	'''
@@ -359,7 +387,7 @@ def nmf_emma_mc(bdf, mdf, nems, ni, stuc_err = 0.05):
 	return femsmc, emsmc
 
 #Step 7: Sort solutions by SSE and save best fitting 5% for each sample
-def sse_keep(femsmc, emsmc, cutoff = 0.05):
+def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 	'''
 	Sorts model results by their || model - data || fit and retains only the
 	best-fitting models for each sample.
@@ -381,6 +409,10 @@ def sse_keep(femsmc, emsmc, cutoff = 0.05):
 		and ni*3 rows, where ni is the number of iterations that solved at least
 		one sample within the sum-to-unity constraint.
 
+	mdnorm : pd.DataFrame
+		Resulting normalized dataframe of measured data, shape nxp. All data are
+		element of (0,1).
+
 	cutoff : float
 		The fraction of best-fitting models to keep; e.g., if ``cutoff = 0.05``,
 		then the 5% of best fitting models for each sample are retained.
@@ -388,7 +420,11 @@ def sse_keep(femsmc, emsmc, cutoff = 0.05):
 
 	Returns
 	-------
-	
+	ssek
+
+	femsk
+
+	emsk
 
 	'''
 
@@ -420,12 +456,7 @@ def sse_keep(femsmc, emsmc, cutoff = 0.05):
 	#calculate sse (length = ns)
 	sse = ((B-Bhat)**2).sum(axis=1)
 
-	#GOOD CODE UNTIL HERE. BELOW IS TESTING.
-
 	#for each sample, only retain best-fitting models
-
-	#first get unique samples as index?
-	# fs = sse.index.levels[1]
 
 	#unstack into nis x ns df, where ns is the number of unique samples fit
 	sseus = sse.unstack()
@@ -434,21 +465,25 @@ def sse_keep(femsmc, emsmc, cutoff = 0.05):
 	nts = sseus.count()
 
 	#get the number to be saved for each sample
-	nsave = (cutoff*nts).astype(int) + 1 #ensure each has at least 1 for now??
+	nsave = (cutoff*nts).astype(int) #ensure each has at least 1 for now??
 
-	#argsort each column
-	ssest = np.argsort(sseus, axis=0)
+	#pre-define boolean matrix of keep/not
+	dfkeep = pd.DataFrame(index = sseus.index, columns = sseus.columns)
 
+	#for each sample, save n best fitting models
+	for col, n in zip(sseus, nsave):
+		dfkeep[col] = _keep(sseus[col], n)
 
-	#calculate which iterations are best fitting
+	#restack into series with heirarchical index
+	ssek = sseus[dfkeep].stack()
 
-	#store
+	#extract values to keep from femsms and emsmc
+	femsk = femsmc.loc[ssek.index]
 
-	#goal:
-	#ik = index of keep/dont keep; length len(sse)
+	ik = ssek.index.get_level_values(0)
+	emsk = emsmc.loc[set(ik)].sort_index()
 
-
-	return
+	return ssek, femsk, emsk
 
 
 
