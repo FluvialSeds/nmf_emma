@@ -3,15 +3,20 @@ Scripts for performing NMF end-member mixing following Shaughnessy et al. (2021)
 '''
 
 #import packages
+import math
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import time
 
+from itertools import combinations
 from numpy.linalg import eig
 from sklearn.decomposition import NMF
 from functools import partial
 from multiprocessing import Pool
+
+#MAKE THIS A MODULE IN MY CODE PACKAGE!
+from copkmeans.cop_kmeans import cop_kmeans
 
 #helper functions:
 
@@ -420,11 +425,20 @@ def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 
 	Returns
 	-------
-	ssek
+	ssek : pd.Series
+		Series of the sum of squared errors for all retained solutions. Length
+		``ns''.
 
-	femsk
+	femsk : pd.DataFrame
+		Dataframe of the fractional contributions by each end-member for all
+		retained solutions. Shape ``ns'' x ``nem''.
 
-	emsk
+	emsk : pd.DataFrame
+		Dataframe of the end-member compositions for all retained solutions.
+		Shape ``3*nm'' x ``nsol''.
+
+	nsave : pd.Series
+		Series of the number of model solutions saved for each sample.
 
 	'''
 
@@ -465,7 +479,7 @@ def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 	nts = sseus.count()
 
 	#get the number to be saved for each sample
-	nsave = (cutoff*nts).astype(int) #ensure each has at least 1 for now??
+	nsave = (cutoff*nts).astype(int)
 
 	#pre-define boolean matrix of keep/not
 	dfkeep = pd.DataFrame(index = sseus.index, columns = sseus.columns)
@@ -483,15 +497,87 @@ def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 	ik = ssek.index.get_level_values(0)
 	emsk = emsmc.loc[set(ik)].sort_index()
 
-	return ssek, femsk, emsk
+	return ssek, femsk, emsk, nsave+1
 
 
-
-def splitrule_sort(femsmc, emsmc):
+#Step 8: Ensure end-members are in same order using cop-kmeans ("split rule")
+def splitrule_sort(femsk, emsk):
 	'''
+	Function for sorting the "split rule", i.e., for dealing with the fact that
+	ems can be reported in different order
+
+	Parameters
+	----------
+	femsk : pd.DataFrame
+		Dataframe of the fractional contributions by each end-member for all
+		retained solutions. Shape ``ns'' x ``nem''.
+
+	emsk : pd.DataFrame
+		Dataframe of the end-member compositions for all retained solutions.
+		Shape ``3*nm'' x ``nsol''.
+
+
+	Returns
+	-------
+	femsks : pd.DataFrame
+		Sorted version of femsk, such that each end-member is now consistent
+		across all samples.
+		
+
+	emsks : pd.DataFrame
+		Sorted version of emsk, such that each end-member is now consistent
+		across all samples.
 	'''
 
-	return
+	#extract values from inputs
+	ns, nems = np.shape(femsk)
+	tnm, nsol = np.shape(emsk)
+	nm = int(tnm/3) #number of models
+
+	#get list of rows within each model
+	mrs = [np.arange(i,i+nems) for i in np.arange(0,tnm,nems)]
+
+	#now get all combinations within each model
+	pl = [list(combinations(m,2)) for m in mrs]
+	cl = [p for em in pl for p in em]
+
+	#perform constrained kmeans clustering
+	clus, cent = cop_kmeans(
+		dataset = emsk.values, 
+		k = nems, 
+		cl = cl
+		)
+
+	#save cluster results into series
+	sclus = pd.Series(clus, index = emsk.index)
+
+	#get into shape of femsk
+	sclusu = sclus.unstack() #unstack
+	t = pd.Series(index = femsk.index,
+		dtype = int,
+		name = 't'
+		) #dummy series 
+
+	#get ordered indices
+	sinds = sclusu.join(t, how = 'inner')[sclusu.columns] #ordered indices
+
+	#sort each row and save as new df of sorted femsk
+	srtd = [femsk.iloc[i,sinds.iloc[i,:]].values for i in range(ns)]
+	femsks = pd.DataFrame(
+		srtd, 
+		index = femsk.index, 
+		columns = femsk.columns
+		)
+
+	#now sort emsk
+	emstrs = ['em_'+str(i+1) for i in clus] #sorted em indices
+	emsks = emsk.reset_index()
+	emsks['em'] = emstrs #replace with sorted strings
+	emsks = emsks.set_index(['iter','em']) #get back to multiindex
+	emsks = emsks.sort_index(level = 1).sort_index(level = 0) #reset em sorting
+
+
+	return femsks, emsks
 
 
 
