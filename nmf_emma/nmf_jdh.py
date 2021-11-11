@@ -499,7 +499,6 @@ def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 
 	return ssek, femsk, emsk, nsave+1
 
-
 #Step 8: Ensure end-members are in same order using cop-kmeans ("split rule")
 def splitrule_sort(femsk, emsk):
 	'''
@@ -579,12 +578,76 @@ def splitrule_sort(femsk, emsk):
 
 	return femsks, emsks
 
-
-
-#Step 8: Ensure end-members are in same order using cop-kmeans ("split rule")
-
-
 #Step 9: Take mean and std. dev. of w and h results for each sample
+def summary(femsks, emsks):
+	'''
+	Function to take sorted results and summarize them into a single dataframe
+	with mean, std. dev., count.
+
+	Parameters
+	----------
+	femsks : pd.DataFrame
+		Sorted version of femsk, such that each end-member is now consistent
+		across all samples.
+		
+
+	emsks : pd.DataFrame
+		Sorted version of emsk, such that each end-member is now consistent
+		across all samples.
+
+	Returns
+	-------
+	sum_table : pd.DataFrame
+		Summary table, with each row being a single sample. Columns are the
+		fractional contributions, end-member compositions, and model solution
+		count for each sample, including means and std. devs.
+	'''
+
+	#pre-allocate dataframe
+	sams = femsks.index.levels[1]
+	fcols = ['f_' + e + ms \
+		for ms in ['_mean','_std'] \
+		for e in femsks.columns]
+
+	ccols = [e +'_'+ s + ms \
+		for ms in ['_mean','_std'] \
+		for e in femsks.columns \
+		for s in emsks.columns]
+
+	cols = fcols + ccols + ['count']
+
+	#get constants
+	nf = len(fcols)
+	nc = len(ccols)
+
+	sum_table = pd.DataFrame(index = sams, columns = cols)
+
+	#populate fractional contributions
+	fgr = femsks.groupby('sample')
+	fres = fgr.mean().join(fgr.std(),lsuffix = '_mean', rsuffix = '_std')
+
+	sum_table.iloc[:,:nf] = fres
+
+	#populate end member compositions
+	emus = emsks.unstack().sort_index(axis = 1,level = 1)
+	ecols = [i[0]+'_'+i[1] for i in emus.columns]
+	emus.columns = ecols
+
+	#project onto index with samples for each iteration
+	emus = emus.join(femsks,how='inner')[ecols]
+
+	#now groupby and project
+	egr = emus.groupby('sample')
+	eres = egr.mean().join(egr.std(),lsuffix = '_mean', rsuffix = '_std')
+
+	sum_table.iloc[:,nf:nf+nc] = eres
+
+	#finally, add counts
+	cts = fgr.count().mean(axis=1).astype(int)
+
+	sum_table['count'] = cts
+
+	return sum_table
 
 
 if __name__ == "__main__":
