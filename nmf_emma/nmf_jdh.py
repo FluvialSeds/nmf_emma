@@ -7,7 +7,11 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+# import modin.pandas as pd
 import time
+
+# import ray
+# ray.itit()
 
 from itertools import combinations
 from numpy.linalg import eig
@@ -464,7 +468,7 @@ def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 	i,j = list(zip(*Bhat.index))
 
 	#extract measured values
-	B = mdnorm.loc[list(j)]
+	B = mdnorm.iloc[list(j)]
 	B.index = Bhat.index
 
 	#calculate sse (length = ns)
@@ -626,7 +630,7 @@ def summary(femsks, emsks):
 	fgr = femsks.groupby('sample')
 	fres = fgr.mean().join(fgr.std(),lsuffix = '_mean', rsuffix = '_std')
 
-	sum_table.iloc[:,:nf] = fres
+	sum_table.iloc[:,:nf] = fres.values
 
 	#populate end member compositions
 	emus = emsks.unstack().sort_index(axis = 1,level = 1)
@@ -640,83 +644,53 @@ def summary(femsks, emsks):
 	egr = emus.groupby('sample')
 	eres = egr.mean().join(egr.std(),lsuffix = '_mean', rsuffix = '_std')
 
-	sum_table.iloc[:,nf:nf+nc] = eres
+	sum_table.iloc[:,nf:nf+nc] = eres.values
 
 	#finally, add counts
 	cts = fgr.count().mean(axis=1).astype(int)
 
-	sum_table['count'] = cts
+	sum_table['count'] = cts.values
 
 	return sum_table
 
 
+#NEED TO INPUT COLMAX TO GET BACK INTO UNNORMALIZED SPACE!!
+
 if __name__ == "__main__":
 
-	print('success')
+	#go through the motions with randomly generated data
+	ni = 10000
+	nems = 4
 
-	# tic = time.time()
-	# with ThreadPoolExecutor(max_workers = 30) as executor:
+	#generate data
+	d = np.abs(np.random.randn(100,6))
+	df = pd.DataFrame(d,columns=['Ca','K','Mg','Na','Cl','SO4'])
+	nums = ['Ca','K','Mg','Na','Cl']
+	denom = 'SO4'
 
-	# 	for i in range(100):
-	# 		executor.submit(nmf_emma, bdf, mdf, 3, sd = i)
+	#bootstrap
+	mdnorm, bdnorm, colmax = normbs(df, nums, denom, nbs = 5000)
 
-	# toc = time.time() - tic
-	# print(toc)
+	#get number of ems (but just set it)
+	# nems = calc_nems(df, var_exp = 0.90, whiten = True) 
 
+	#perform monte carlo nmf
+	femsmc, emsmc = nmf_emma_mc(bdnorm, mdnorm, nems, ni)
 
+	#screen and keep best fits
+	_, femsk, emskn, _ = sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05)
+	emsk = emskn*colmax #un-normalize
 
-	# tic = time.time()
-	# for i in range(100):
-	# 	res = nmf_emma(bdf,mdf,3,sd=i)
+	#deal with split rule
+	femsks, emsks = splitrule_sort(femsk, emsk)
 
-	# toc = time.time() - tic
-	# print(toc)
-
-
-	# f = partial(nmf_emma, bdf, mdf, nems, stuc_err = stuc_err)
-
-	# #something like this (but it bugs out right now)
- #    with Pool(5) as p:
- #        print(p.map(f, [1, 2, 3]))
-
-
-	# def pt(a,b,c=5,d=10):
-
-	# 	print('a = {}'.format(a))
-	# 	print('b = {}'.format(b))
-	# 	print('c = {}'.format(c))
-	# 	print('d = {}'.format(d))
-
-	# 	return a
-
-	# f = partial(pt, 2,3, d=5)
-
-	# with Pool(5) as p:
-	# 	p.map(f, range(5))
-
-
-# tic = time.time()
-# iterlist = nmf_iter(bdnorm,mdnorm,nems,1000)
-# toc = time.time()
-# print('time = %.2f' % toc-tic)
-
-
-	# #get matrix for each iteration
-	# A = emsmc.loc[0].unstack()
-	# x = femsmc.loc[0]
-	# Bhat = np.dot(x,A)
-	# B = mdnorm.loc[x.index]
-	# se = (B - Bhat)**2
-	# sse = se.sum(axis=1)
+	#generate summary table
+	st = summary(femsks, emsks)
 
 
 
-	# #TESTING CODE
-	# # i,j = list(zip(*femsmc.index))
-	
-	# #reshape femsmc
-	# # X = femsmc.unstack(0)
-	# # X = X.swaplevel(axis = 1)
 
-	# # #now reorder columns
-	# # X = X.T.sort_index(level=0).T
+
+
+
+
