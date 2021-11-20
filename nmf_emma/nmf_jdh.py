@@ -456,54 +456,27 @@ def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 	#get list of each column
 
 	#length nr, index up for each new iteration in femsmc.index
-	it = [i[0] for i in femsmc.index]
-	newit = []
 
-	#########################
-	#IS THERE A BETTER WAY TO DO THIS WITHOUT A LOOP??
-	#THIS TAKES FOREVER!!!
-	j = -1
-	for i in range(nr):
-		if it[i] not in it[:i]:
-			j+=1
-		newit.append(j)
-	##########################
+	#make mappint dictionary
+	ui = list(set(femsmc.index.levels[0]))
+	nui = len(ui)
+	mapdict = dict(zip(ui,range(nui)))
 
-	col = [r*nc + c for r in newit for c in range(nc)]
+	#list of iteration number for each row
+	it = [mapdict[i[0]] for i in femsmc.index]
 
+	#get into column values
+	col = [r*nc + c for r in it for c in range(nc)]
+
+	#reshape data for entering into sparse matrix
 	D = femsmc.values.reshape(nr*nc,)
 
-
 	#make into sparse matrix
-	X = bsr_matrix((D,(row,col)))#.toarray()
-
-
-	#ORIGINAL CODE BEGINS HERE
-
-	#get fractional abundance matrix into the right shape
-	#shape = ns x 3*nis, where ns is the total number of samples fit and nis is
-	# the number of iterations that fit at least one sample.
-	# X = femsmc.reset_index()
-	# X['temp'] = X['iter']
-	# X = X.set_index(['temp','iter','sample'])
-	
-	# #this line takes ~15% of total time
-	# X = X.unstack(0)
-
-	# #this line takes ~45% ot total time HIGH PRIORITY
-	# X = X.swaplevel(axis=1)
-
-	# #this line takes ~10% of total time
-	# X = X.T.sort_index(level=0).T
-
-	# #this line takes ~45% of total time HIGH PRIORITY
-	# X = X.fillna(0) #make all NaNs zero
+	X = bsr_matrix((D,(row,col)))
 
 	#get design matrix, A
 	#shape = 3*nis x na, where na is the number of analytes
 	A = emsmc
-
-	#this dot product is only ~5% of total time!
 
 	#calculate estimated analyte values, Bhat, as A*X = Bhat
 	#shape = ns x na
@@ -513,9 +486,6 @@ def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 	Bhat = pd.DataFrame(Bhat, index = femsmc.index, columns = emsmc.columns)
 
 	i,j = list(zip(*Bhat.index))
-
-
-	#from here to the end only takes ~5% of total time
 
 	#extract measured values
 	B = mdnorm.iloc[list(j)]
@@ -723,11 +693,3 @@ if __name__ == "__main__":
 
 	toc = time.time() - tic
 	print('total time: %.2f s' %toc)
-
-
-
-
-
-
-
-
