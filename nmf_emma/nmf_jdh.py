@@ -2,22 +2,23 @@
 Scripts for performing NMF end-member mixing following Shaughnessy et al. (2021)
 '''
 
+#TODO:
+# * SPEED UP SSE_KEEP FUNCTION (PARALLELIZE?)
+# * RETAIN SAMPLE NAMES THROUGHOUT
+
 #import packages
 import math
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-# import modin.pandas as pd
 import time
-
-# import ray
-# ray.itit()
 
 from itertools import combinations
 from numpy.linalg import eig
 from sklearn.decomposition import NMF
 from functools import partial
 from multiprocessing import Pool
+from scipy.sparse import bsr_matrix
 
 #MAKE THIS A MODULE IN MY CODE PACKAGE!
 from copkmeans.cop_kmeans import cop_kmeans
@@ -446,26 +447,75 @@ def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 
 	'''
 
+	#extract size
+	nr,nc = np.shape(femsmc)
+
+	#get list of each row
+	row = [r for r in range(nr) for c in range(nc)]
+
+	#get list of each column
+
+	#length nr, index up for each new iteration in femsmc.index
+	it = [i[0] for i in femsmc.index]
+	newit = []
+
+	#########################
+	#IS THERE A BETTER WAY TO DO THIS WITHOUT A LOOP??
+	#THIS TAKES FOREVER!!!
+	j = -1
+	for i in range(nr):
+		if it[i] not in it[:i]:
+			j+=1
+		newit.append(j)
+	##########################
+
+	col = [r*nc + c for r in newit for c in range(nc)]
+
+	D = femsmc.values.reshape(nr*nc,)
+
+
+	#make into sparse matrix
+	X = bsr_matrix((D,(row,col)))#.toarray()
+
+
+	#ORIGINAL CODE BEGINS HERE
+
 	#get fractional abundance matrix into the right shape
 	#shape = ns x 3*nis, where ns is the total number of samples fit and nis is
 	# the number of iterations that fit at least one sample.
-	X = femsmc.reset_index()
-	X['temp'] = X['iter']
-	X = X.set_index(['temp','iter','sample'])
-	X = X.unstack(0)
-	X = X.swaplevel(axis=1)
-	X = X.T.sort_index(level=0).T
-	X = X.fillna(0) #make all NaNs zero
+	# X = femsmc.reset_index()
+	# X['temp'] = X['iter']
+	# X = X.set_index(['temp','iter','sample'])
+	
+	# #this line takes ~15% of total time
+	# X = X.unstack(0)
+
+	# #this line takes ~45% ot total time HIGH PRIORITY
+	# X = X.swaplevel(axis=1)
+
+	# #this line takes ~10% of total time
+	# X = X.T.sort_index(level=0).T
+
+	# #this line takes ~45% of total time HIGH PRIORITY
+	# X = X.fillna(0) #make all NaNs zero
 
 	#get design matrix, A
 	#shape = 3*nis x na, where na is the number of analytes
 	A = emsmc
 
+	#this dot product is only ~5% of total time!
+
 	#calculate estimated analyte values, Bhat, as A*X = Bhat
 	#shape = ns x na
 	Bhat = X.dot(A)
 
+	#make into dataframe with index from femsmc
+	Bhat = pd.DataFrame(Bhat, index = femsmc.index, columns = emsmc.columns)
+
 	i,j = list(zip(*Bhat.index))
+
+
+	#from here to the end only takes ~5% of total time
 
 	#extract measured values
 	B = mdnorm.iloc[list(j)]
@@ -607,30 +657,12 @@ def summary(femsks, emsks):
 		count for each sample, including means and std. devs.
 	'''
 
-	#pre-allocate dataframe
-	sams = femsks.index.levels[1]
-	fcols = ['f_' + e + ms \
-		for ms in ['_mean','_std'] \
-		for e in femsks.columns]
-
-	ccols = [e +'_'+ s + ms \
-		for ms in ['_mean','_std'] \
-		for e in femsks.columns \
-		for s in emsks.columns]
-
-	cols = fcols + ccols + ['count']
-
-	#get constants
-	nf = len(fcols)
-	nc = len(ccols)
-
-	sum_table = pd.DataFrame(index = sams, columns = cols)
-
 	#populate fractional contributions
 	fgr = femsks.groupby('sample')
 	fres = fgr.mean().join(fgr.std(),lsuffix = '_mean', rsuffix = '_std')
 
-	sum_table.iloc[:,:nf] = fres.values
+	#put f_ in front of each column name
+	fres.columns = ['f_'+c for c in fres.columns]
 
 	#populate end member compositions
 	emus = emsks.unstack().sort_index(axis = 1,level = 1)
@@ -644,7 +676,8 @@ def summary(femsks, emsks):
 	egr = emus.groupby('sample')
 	eres = egr.mean().join(egr.std(),lsuffix = '_mean', rsuffix = '_std')
 
-	sum_table.iloc[:,nf:nf+nc] = eres.values
+	#store results in summary table
+	sum_table = pd.concat([fres,eres],axis=1)
 
 	#finally, add counts
 	cts = fgr.count().mean(axis=1).astype(int)
@@ -654,12 +687,10 @@ def summary(femsks, emsks):
 	return sum_table
 
 
-#NEED TO INPUT COLMAX TO GET BACK INTO UNNORMALIZED SPACE!!
-
 if __name__ == "__main__":
 
 	#go through the motions with randomly generated data
-	ni = 10000
+	ni = 50
 	nems = 4
 
 	#generate data
@@ -667,6 +698,9 @@ if __name__ == "__main__":
 	df = pd.DataFrame(d,columns=['Ca','K','Mg','Na','Cl','SO4'])
 	nums = ['Ca','K','Mg','Na','Cl']
 	denom = 'SO4'
+
+
+	tic = time.time()
 
 	#bootstrap
 	mdnorm, bdnorm, colmax = normbs(df, nums, denom, nbs = 5000)
@@ -686,6 +720,9 @@ if __name__ == "__main__":
 
 	#generate summary table
 	st = summary(femsks, emsks)
+
+	toc = time.time() - tic
+	print('total time: %.2f s' %toc)
 
 
 
