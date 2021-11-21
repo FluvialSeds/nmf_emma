@@ -2,10 +2,6 @@
 Scripts for performing NMF end-member mixing following Shaughnessy et al. (2021)
 '''
 
-#TODO:
-# * SPEED UP SSE_KEEP FUNCTION (PARALLELIZE?)
-# * RETAIN SAMPLE NAMES THROUGHOUT
-
 #import packages
 import math
 import matplotlib.pyplot as plt
@@ -279,7 +275,7 @@ def nmf_emma(bdf, mdf, nems, sd = None, stuc_err = 0.05):
 
 	#store as dataframes
 	fems = pd.DataFrame(W[ind,:],
-						index = ind,
+						index = mdf.index[ind],
 						columns = enames,
 						)
 
@@ -381,9 +377,10 @@ def nmf_emma_mc(bdf, mdf, nems, ni, stuc_err = 0.05):
 	elist = pd.concat(el)
 
 	#reindex flist by iteration
-	ft = flist.reset_index()
-	ft = ft.rename(columns = {'index':'sample'})
-	ft = ft.set_index(['iter','sample'])
+	# ft = flist.reset_index()
+	# ft = ft.rename(columns = {'index':'sample'})
+	# ft = ft.set_index(['iter','sample'])
+	ft = flist.set_index(['iter',flist.index])
 	femsmc = ft.sort_index(axis = 0)
 
 	#reindex elist by iteration
@@ -488,7 +485,7 @@ def sse_keep(femsmc, emsmc, mdnorm, cutoff = 0.05):
 	i,j = list(zip(*Bhat.index))
 
 	#extract measured values
-	B = mdnorm.iloc[list(j)]
+	B = mdnorm.loc[list(j)]
 	B.index = Bhat.index
 
 	#calculate sse (length = ns)
@@ -627,8 +624,10 @@ def summary(femsks, emsks):
 		count for each sample, including means and std. devs.
 	'''
 
+	sn = femsks.index.levels[1]
+
 	#populate fractional contributions
-	fgr = femsks.groupby('sample')
+	fgr = femsks.groupby(sn)
 	fres = fgr.mean().join(fgr.std(),lsuffix = '_mean', rsuffix = '_std')
 
 	#put f_ in front of each column name
@@ -643,7 +642,7 @@ def summary(femsks, emsks):
 	emus = emus.join(femsks,how='inner')[ecols]
 
 	#now groupby and project
-	egr = emus.groupby('sample')
+	egr = emus.groupby(sn)
 	eres = egr.mean().join(egr.std(),lsuffix = '_mean', rsuffix = '_std')
 
 	#store results in summary table
