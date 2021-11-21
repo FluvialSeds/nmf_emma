@@ -624,7 +624,7 @@ def summary(femsks, emsks):
 		count for each sample, including means and std. devs.
 	'''
 
-	sn = femsks.index.levels[1]
+	sn = femsks.index.levels[1].name
 
 	#populate fractional contributions
 	fgr = femsks.groupby(sn)
@@ -672,7 +672,7 @@ if __name__ == "__main__":
 	tic = time.time()
 
 	#bootstrap
-	mdnorm, bdnorm, colmax = normbs(df, nums, denom, nbs = 5000)
+	mdnorm, bdnorm, colmax = normbs(nzdf, nums, denom, nbs = 5000)
 
 	#get number of ems (but just set it)
 	# nems = calc_nems(df, var_exp = 0.90, whiten = True) 
